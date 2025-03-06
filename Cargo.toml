@@ -5,4 +5,5 @@ edition = "2021"
 
 [dependencies]
 iced = "0.13.1"
+iced_aw = { version = "0.12.2", default-features = false, features = ["number_input"] }
 rodio = "0.20.1"

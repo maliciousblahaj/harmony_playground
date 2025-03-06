@@ -1,10 +1,19 @@
-use std::{collections::HashSet, f32::consts::TAU, sync::Arc};
+pub mod audio;
+pub mod gui;
+
+use std::{
+    collections::HashSet,
+    f32::consts::TAU,
+    sync::{Arc, RwLock},
+};
+
+pub const WAVETABLE_SIZE: usize = 1024;
 
 #[derive(Debug)]
 pub struct Chord(HashSet<Frequency>);
 
-#[derive(Debug)]
-pub struct AbsoluteFrequency(f32);
+#[derive(Debug, Clone, Copy)]
+pub struct AbsoluteFrequency(pub f32);
 
 #[derive(Debug)]
 pub struct Frequency {
@@ -28,7 +37,7 @@ impl Frequency {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Ratio {
     numerator: u32,
     denominator: u32,
@@ -47,7 +56,7 @@ impl Ratio {
     }
 }
 
-pub struct WaveTable([f32; 1024]);
+pub struct WaveTable([f32; WAVETABLE_SIZE]);
 
 impl WaveTable {
     pub fn sine() -> Self {
@@ -68,9 +77,9 @@ impl WaveTable {
 
     /// Create a wavetable from a periodic function of period 1
     pub fn from_fn(f: fn(f32) -> f32) -> Self {
-        let mut table = [0f32; 1024];
-        for i in 0..1024 {
-            table[i] = f(i as f32 * ((1024f32).recip()));
+        let mut table = [0f32; WAVETABLE_SIZE];
+        for i in 0..WAVETABLE_SIZE {
+            table[i] = f(i as f32 * ((WAVETABLE_SIZE as f32).recip()));
         }
         Self(table)
     }
@@ -80,11 +89,15 @@ impl WaveTable {
     }
 
     pub fn get_interpolated_value(&self, index: f32) -> f32 {
-        let index = index % 1024.0;
+        let index = index % (WAVETABLE_SIZE as f32);
         let floor = index as usize;
         let (sample0, sample1) = (
             self.0[floor],
-            self.0[if floor == 1024 { 0 } else { floor + 1 }],
+            self.0[if floor == WAVETABLE_SIZE {
+                0
+            } else {
+                floor + 1
+            }],
         );
         lerp(sample0, sample1, index - (floor as f32))
     }
@@ -98,12 +111,12 @@ pub struct WaveTableOscillator {
     sample_rate: usize,
     sample_rate_recip: f32,
     frequency: f32,
-    wavetable: Arc<WaveTable>,
+    wavetable: Arc<RwLock<WaveTable>>,
     time: f32,
 }
 
 impl WaveTableOscillator {
-    pub fn new(sample_rate: usize, frequency: f32, wavetable: Arc<WaveTable>) -> Self {
+    pub fn new(sample_rate: usize, frequency: f32, wavetable: Arc<RwLock<WaveTable>>) -> Self {
         Self {
             sample_rate,
             sample_rate_recip: (sample_rate as f32).recip(),
@@ -122,7 +135,11 @@ impl Iterator for WaveTableOscillator {
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let sample = self.wavetable.get_interpolated_value(self.time * 1024.0);
+        let sample = self
+            .wavetable
+            .read()
+            .unwrap()
+            .get_interpolated_value(self.time * (WAVETABLE_SIZE as f32));
         self.time += self.frequency * self.sample_rate_recip;
         Some(sample)
     }
