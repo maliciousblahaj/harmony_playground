@@ -1,7 +1,7 @@
 use iced::{
-    widget::{column, row, text},
+    widget::{column, container, row, text},
     Alignment::Center,
-    Element,
+    Border, Color, Element,
 };
 use iced_aw::number_input;
 
@@ -12,27 +12,39 @@ pub struct RelativeFrequency {
 }
 
 impl RelativeFrequency {
-    pub fn view(&self) -> Element<RelativeFrequencyMessage> {
-        column![
-            row![
-                text("id:"),
-                number_input(
-                    &self.absolute_frequency_id,
-                    0..usize::MAX,
-                    RelativeFrequencyMessage::AbsoluteFrequencyIdUpdated,
-                )
-                .width(40),
-            ],
-            row![
-                text("ratio"),
-                self.ratio
-                    .view()
-                    .map(|message| RelativeFrequencyMessage::RatioUpdated(message))
+    pub fn view(&self, max_id: usize) -> Element<RelativeFrequencyMessage> {
+        container(
+            column![
+                row![
+                    text("id:"),
+                    number_input(
+                        &self.absolute_frequency_id,
+                        1..=max_id,
+                        RelativeFrequencyMessage::AbsoluteFrequencyIdUpdated,
+                    )
+                    .width(40),
+                ],
+                row![
+                    text("ratio"),
+                    self.ratio
+                        .view()
+                        .map(|message| RelativeFrequencyMessage::RatioUpdated(message))
+                ]
+                .align_y(Center)
+                .spacing(5),
             ]
-            .align_y(Center)
-            .spacing(5),
-        ]
-        .spacing(20)
+            .spacing(20),
+        )
+        .padding(10)
+        .height(150)
+        .style(|_| {
+            iced::widget::container::Style::default().border(
+                Border::default()
+                    .width(1)
+                    .rounded(2)
+                    .color(Color::from_rgb(0.7, 0.7, 0.7)),
+            )
+        })
         .into()
     }
 

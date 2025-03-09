@@ -1,6 +1,6 @@
 use iced::{
-    widget::{row, text},
-    Element,
+    widget::{container, row, text},
+    Border, Color, Element,
 };
 use iced_aw::number_input;
 
@@ -22,17 +22,29 @@ impl GlobalFrequency {
     }
 
     pub fn view(&self) -> Element<GlobalFrequencyMessage> {
-        row![
-            text(format!("id: {}", self.id)),
-            number_input(
-                &self.frequency,
-                1f32..=20000f32,
-                GlobalFrequencyMessage::FrequencyUpdated
+        container(
+            row![
+                text(format!("id: {}", self.id)),
+                number_input(
+                    &self.frequency,
+                    1f32..=20000f32,
+                    GlobalFrequencyMessage::FrequencyUpdated
+                )
+                .width(100)
+                .step(1.0),
+            ]
+            .spacing(10),
+        )
+        .padding(10)
+        .width(150)
+        .style(|_| {
+            iced::widget::container::Style::default().border(
+                Border::default()
+                    .width(1)
+                    .rounded(2)
+                    .color(Color::from_rgb(0.7, 0.7, 0.7)),
             )
-            .width(100)
-            .step(1.0),
-        ]
-        .spacing(10)
+        })
         .into()
     }
 
