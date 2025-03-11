@@ -1,5 +1,7 @@
 use std::f32::consts::TAU;
 
+use super::engine::SharedFrequency;
+
 pub const WAVETABLE_SIZE: usize = 1024;
 
 #[derive(Clone)]
@@ -40,7 +42,7 @@ impl WaveTable {
         let floor = index as usize;
         let (sample0, sample1) = (
             self.0[floor],
-            self.0[if floor == WAVETABLE_SIZE {
+            self.0[if floor == WAVETABLE_SIZE - 1 {
                 0
             } else {
                 floor + 1
@@ -54,7 +56,7 @@ const fn lerp(sample0: f32, sample1: f32, t: f32) -> f32 {
     (1.0 - t) * sample0 + t * sample1
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaveForm {
     Sine,
     Triangle,
@@ -65,13 +67,13 @@ pub enum WaveForm {
 pub struct WaveTableOscillator {
     sample_rate: usize,
     sample_rate_recip: f32,
-    frequency: f32,
+    frequency: SharedFrequency,
     wavetable: WaveTable,
     time: f32,
 }
 
 impl WaveTableOscillator {
-    pub fn new(sample_rate: usize, frequency: f32, wavetable: WaveTable) -> Self {
+    pub fn new(sample_rate: usize, frequency: SharedFrequency, wavetable: WaveTable) -> Self {
         Self {
             sample_rate,
             sample_rate_recip: (sample_rate as f32).recip(),
@@ -81,9 +83,9 @@ impl WaveTableOscillator {
         }
     }
 
-    pub fn set_frequency(&mut self, new_frequency: f32) {
-        self.frequency = new_frequency;
-    }
+    //pub fn set_frequency(&mut self, new_frequency: f32) {
+    //    self.frequency = new_frequency;
+    //}
 
     pub fn set_wavetable(&mut self, wavetable: WaveTable) {
         self.wavetable = wavetable;
@@ -97,7 +99,7 @@ impl Iterator for WaveTableOscillator {
         let sample = self
             .wavetable
             .get_interpolated_value(self.time * (WAVETABLE_SIZE as f32));
-        self.time += self.frequency * self.sample_rate_recip;
+        self.time += self.frequency.get() * self.sample_rate_recip;
         Some(sample)
     }
 }

@@ -1,7 +1,7 @@
 use iced::{
     widget::{column, container, row, text},
     Alignment::Center,
-    Border, Color, Element,
+    Border, Element, Length,
 };
 use iced_aw::number_input;
 
@@ -15,34 +15,41 @@ impl RelativeFrequency {
     pub fn view(&self, max_id: usize) -> Element<RelativeFrequencyMessage> {
         container(
             column![
-                row![
-                    text("id:"),
+                container(row![
+                    text("id"),
+                    iced::widget::Space::new(Length::Fill, Length::Shrink),
                     number_input(
                         &self.absolute_frequency_id,
                         1..=max_id,
                         RelativeFrequencyMessage::AbsoluteFrequencyIdUpdated,
                     )
                     .width(40),
-                ],
-                row![
-                    text("ratio"),
-                    self.ratio
-                        .view()
-                        .map(|message| RelativeFrequencyMessage::RatioUpdated(message))
-                ]
-                .align_y(Center)
-                .spacing(5),
+                ])
+                .width(75),
+                container(
+                    row![
+                        text("ratio"),
+                        iced::widget::Space::new(Length::Fill, Length::Shrink),
+                        self.ratio
+                            .view()
+                            .map(|message| RelativeFrequencyMessage::RatioUpdated(message))
+                    ]
+                    .align_y(Center)
+                    .spacing(5)
+                )
+                .width(75),
             ]
+            .align_x(Center)
             .spacing(20),
         )
         .padding(10)
         .height(150)
-        .style(|_| {
+        .style(|theme: &iced::Theme| {
             iced::widget::container::Style::default().border(
                 Border::default()
                     .width(1)
                     .rounded(2)
-                    .color(Color::from_rgb(0.7, 0.7, 0.7)),
+                    .color(theme.palette().background.inverse().scale_alpha(0.2)),
             )
         })
         .into()

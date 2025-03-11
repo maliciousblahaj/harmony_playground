@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, RwLock},
+};
 
 use super::synthesizer::{WaveForm, WaveTable, WaveTableOscillator};
 
@@ -9,36 +12,38 @@ pub struct AudioEngine {
     oscillators: BTreeMap<usize, WaveTableOscillator>,
     time: f32,
     volume_multiple: f32,
-    volume: f32,
+    volume: Volume,
     latestid: usize,
 }
 
 impl AudioEngine {
     pub fn new(sample_rate: usize) -> Self {
+        let volume = Volume::new(f32::NEG_INFINITY);
         Self {
             sample_rate,
             wavetable: WaveTable::sine(),
             oscillators: BTreeMap::new(),
             time: 0.0,
-            volume_multiple: 0.25,
-            volume: -2.0,
+            volume_multiple: volume.multiple(),
+            volume,
             latestid: 0,
         }
     }
 
     /// Get the current volume
-    pub fn get_volume(&self) -> f32 {
+    pub fn get_volume(&self) -> Volume {
         self.volume
     }
 
     /// new_volume should be a base 2 gain
-    pub fn set_volume(&mut self, new_volume: f32) {
-        self.volume_multiple = new_volume.clamp(f32::NEG_INFINITY, 0.0).exp2();
+    pub fn set_volume(&mut self, new_volume: Volume) {
+        self.volume_multiple = new_volume.multiple();
         self.volume = new_volume;
+        dbg!("Volume set: ", new_volume,);
     }
 
     /// Adds an oscillator to the engine, and returns the id
-    pub fn add_oscillator(&mut self, frequency: f32) -> usize {
+    pub fn add_oscillator(&mut self, frequency: SharedFrequency) -> usize {
         let id = self.latestid;
         self.latestid += 1;
 
@@ -59,13 +64,13 @@ impl AudioEngine {
         self.oscillators.remove(id);
     }
 
-    /// Sets the oscillator with the provided id's frequency
-    pub fn set_oscillator_frequency(&mut self, id: &usize, frequency: f32) {
-        match self.oscillators.get_mut(id) {
-            Some(osc) => osc.set_frequency(frequency),
-            None => {}
-        }
-    }
+    ///// Sets the oscillator with the provided id's frequency
+    //pub fn set_oscillator_frequency(&mut self, id: &usize, frequency: f32) {
+    //    match self.oscillators.get_mut(id) {
+    //        Some(osc) => osc.set_frequency(frequency),
+    //        None => {}
+    //    }
+    //}
 
     /// Set the waveform
     pub fn set_waveform(&mut self, waveform: WaveForm) {
@@ -91,5 +96,43 @@ impl Iterator for AudioEngine {
             sum += osc.next().unwrap_or(0.0);
         }
         Some(sum * self.volume_multiple)
+    }
+}
+
+/// A struct representing a volume in base 2 gain. It is always clamped to be less than or equal to zero
+#[derive(Debug, Clone, Copy)]
+pub struct Volume(f32);
+
+impl Volume {
+    pub fn new(volume: f32) -> Self {
+        let volume = volume.clamp(f32::NEG_INFINITY, 0.0);
+        Self(volume)
+    }
+
+    pub fn get(&self) -> f32 {
+        self.0
+    }
+
+    pub fn multiple(&self) -> f32 {
+        self.0.exp2()
+    }
+}
+
+/// A frequency shared between the gui thread and the audio thread to not have to put
+/// locks on all data, only what's required
+#[derive(Clone)]
+pub struct SharedFrequency(Arc<RwLock<f32>>);
+
+impl SharedFrequency {
+    pub fn new(frequency: f32) -> Self {
+        Self(Arc::new(RwLock::new(frequency)))
+    }
+
+    pub fn get(&self) -> f32 {
+        *self.0.read().unwrap()
+    }
+
+    pub fn set(&self, frequency: f32) {
+        *self.0.write().unwrap() = frequency;
     }
 }

@@ -1,14 +1,15 @@
 use iced::{
     widget::{container, row, text},
-    Border, Color, Element,
+    Border, Element,
 };
 use iced_aw::number_input;
 
+#[derive(Clone)]
 /// A struct for storing the gui element representing a global frequency
 pub struct GlobalFrequency {
-    /// The id of the global frequency, used for referencing from local frequencies
+    /// The id of the global frequency, used for showing the user which indexed id the global frequency has
     id: usize,
-    pub frequency: f32,
+    frequency: f32,
 }
 
 impl GlobalFrequency {
@@ -19,6 +20,10 @@ impl GlobalFrequency {
     /// Get the id of the global frequency
     pub fn id(&self) -> usize {
         self.id
+    }
+
+    pub fn frequency(&self) -> f32 {
+        self.frequency
     }
 
     pub fn view(&self) -> Element<GlobalFrequencyMessage> {
@@ -37,12 +42,12 @@ impl GlobalFrequency {
         )
         .padding(10)
         .width(150)
-        .style(|_| {
+        .style(|theme: &iced::Theme| {
             iced::widget::container::Style::default().border(
                 Border::default()
                     .width(1)
                     .rounded(2)
-                    .color(Color::from_rgb(0.7, 0.7, 0.7)),
+                    .color(theme.palette().background.inverse().scale_alpha(0.2)),
             )
         })
         .into()
@@ -61,3 +66,22 @@ impl GlobalFrequency {
 pub enum GlobalFrequencyMessage {
     FrequencyUpdated(f32),
 }
+
+//#[derive(Clone)]
+///// Global frequency to be shared internally on the gui thread
+//pub struct GuiSharedGlobalFrequency(Rc<Cell<f32>>);
+//
+//impl GuiSharedGlobalFrequency {
+//    pub fn new(frequency: f32) -> Self {
+//        Self(Rc::new(Cell::new(frequency)))
+//    }
+//
+//    pub fn get(&self) -> f32 {
+//        self.0.get()
+//    }
+//
+//    pub fn set(&self, frequency: f32) {
+//        self.0.set(frequency)
+//    }
+//}
+//
