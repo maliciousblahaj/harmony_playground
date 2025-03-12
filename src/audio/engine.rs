@@ -10,7 +10,7 @@ pub struct AudioEngine {
     sample_rate: usize,
     wavetable: WaveTable,
     oscillators: BTreeMap<usize, WaveTableOscillator>,
-    time: f32,
+    _time: f32, // eventually used in the future for syncinc oscillators
     volume_multiple: f32,
     volume: Volume,
     latestid: usize,
@@ -23,7 +23,7 @@ impl AudioEngine {
             sample_rate,
             wavetable: WaveTable::sine(),
             oscillators: BTreeMap::new(),
-            time: 0.0,
+            _time: 0.0,
             volume_multiple: volume.multiple(),
             volume,
             latestid: 0,
@@ -43,13 +43,22 @@ impl AudioEngine {
     }
 
     /// Adds an oscillator to the engine, and returns the id
-    pub fn add_oscillator(&mut self, frequency: SharedFrequency) -> usize {
+    pub fn add_oscillator(
+        &mut self,
+        frequency: SharedFrequency,
+        volume_multiplier: SharedVolumeMultiplier,
+    ) -> usize {
         let id = self.latestid;
         self.latestid += 1;
 
         self.oscillators.insert(
             id,
-            WaveTableOscillator::new(self.sample_rate, frequency, self.wavetable.clone()),
+            WaveTableOscillator::new(
+                self.sample_rate,
+                frequency,
+                volume_multiplier,
+                self.wavetable.clone(),
+            ),
         );
         id
     }
@@ -134,5 +143,23 @@ impl SharedFrequency {
 
     pub fn set(&self, frequency: f32) {
         *self.0.write().unwrap() = frequency;
+    }
+}
+
+#[derive(Clone)]
+pub struct SharedVolumeMultiplier(Arc<RwLock<f32>>);
+
+impl SharedVolumeMultiplier {
+    pub fn new(volume_multiplier: f32) -> Self {
+        Self(Arc::new(RwLock::new(volume_multiplier)))
+    }
+
+    pub fn get(&self) -> f32 {
+        *self.0.read().unwrap()
+    }
+
+    pub fn set(&self, volume_multiplier: f32) {
+        let volume_multiplier = volume_multiplier.clamp(0.0, 1.0);
+        *self.0.write().unwrap() = volume_multiplier;
     }
 }

@@ -1,5 +1,5 @@
 use iced::{
-    widget::{column, container, row, text},
+    widget::{column, container, row, text, vertical_slider},
     Alignment::Center,
     Border, Element, Length,
 };
@@ -9,38 +9,47 @@ use iced_aw::number_input;
 pub struct RelativeFrequency {
     pub absolute_frequency_id: usize,
     pub ratio: Ratio,
+    pub volume: f32,
 }
 
 impl RelativeFrequency {
     pub fn view(&self, max_id: usize) -> Element<RelativeFrequencyMessage> {
         container(
-            column![
-                container(row![
-                    text("id"),
-                    iced::widget::Space::new(Length::Fill, Length::Shrink),
-                    number_input(
-                        &self.absolute_frequency_id,
-                        1..=max_id,
-                        RelativeFrequencyMessage::AbsoluteFrequencyIdUpdated,
-                    )
-                    .width(40),
-                ])
-                .width(75),
-                container(
-                    row![
-                        text("ratio"),
+            row![
+                column![
+                    container(row![
+                        text("id"),
                         iced::widget::Space::new(Length::Fill, Length::Shrink),
-                        self.ratio
-                            .view()
-                            .map(|message| RelativeFrequencyMessage::RatioUpdated(message))
-                    ]
-                    .align_y(Center)
-                    .spacing(5)
+                        number_input(
+                            &self.absolute_frequency_id,
+                            1..=max_id,
+                            RelativeFrequencyMessage::AbsoluteFrequencyIdUpdated,
+                        )
+                        .width(40),
+                    ])
+                    .width(75),
+                    container(
+                        row![
+                            text("ratio"),
+                            iced::widget::Space::new(Length::Fill, Length::Shrink),
+                            self.ratio
+                                .view()
+                                .map(RelativeFrequencyMessage::RatioUpdated)
+                        ]
+                        .align_y(Center)
+                        .spacing(5)
+                    )
+                    .width(75),
+                ]
+                .align_x(Center)
+                .spacing(20),
+                vertical_slider(
+                    -16.0..=0.0,
+                    self.volume,
+                    RelativeFrequencyMessage::VolumeUpdated
                 )
-                .width(75),
             ]
-            .align_x(Center)
-            .spacing(20),
+            .spacing(5),
         )
         .padding(10)
         .height(150)
@@ -63,6 +72,9 @@ impl RelativeFrequency {
             RelativeFrequencyMessage::RatioUpdated(message) => {
                 self.ratio.update(message);
             }
+            RelativeFrequencyMessage::VolumeUpdated(new_volume) => {
+                self.volume = new_volume;
+            }
         }
     }
 }
@@ -71,6 +83,7 @@ impl RelativeFrequency {
 pub enum RelativeFrequencyMessage {
     AbsoluteFrequencyIdUpdated(usize),
     RatioUpdated(RatioMessage),
+    VolumeUpdated(f32),
 }
 
 /// A struct for storing a mathematical ratio

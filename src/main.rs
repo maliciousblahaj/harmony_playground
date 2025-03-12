@@ -1,16 +1,17 @@
 use std::{
+    collections::BTreeMap,
     iter::once,
     sync::{Arc, Mutex},
 };
 
 use harmony_playground::{
     audio::{
-        engine::{AudioEngine, SharedFrequency, Volume},
+        engine::{AudioEngine, SharedFrequency, SharedVolumeMultiplier, Volume},
         synthesizer::WaveForm,
     },
     gui::{
         self,
-        global_frequency::{self, GlobalFrequency, GlobalFrequencyMessage},
+        global_frequency::{GlobalFrequency, GlobalFrequencyMessage},
         relative_frequency::{Ratio, RelativeFrequency, RelativeFrequencyMessage},
     },
 };
@@ -31,10 +32,15 @@ struct State {
     waveform: Option<WaveForm>,
     volume: Volume,
 
-    global_frequencies: Vec<GlobalFrequency>,
+    global_frequencies: BTreeMap<usize, GlobalFrequency>,
     /// Stores the relative frequency, its corresponding oscillator id for future possible deletion,
     /// and its corresponding shared frequency for simply updating the oscillator
-    relative_frequencies: Vec<(RelativeFrequency, Option<usize>, SharedFrequency)>,
+    relative_frequencies: Vec<(
+        RelativeFrequency,
+        Option<usize>,
+        SharedFrequency,
+        SharedVolumeMultiplier,
+    )>,
     latest_id: usize,
 }
 
@@ -45,15 +51,17 @@ impl State {
             engine,
             waveform: Some(WaveForm::Sine),
             volume,
-            global_frequencies: Vec::new(),
+            global_frequencies: BTreeMap::new(),
             relative_frequencies: Vec::new(),
-            latest_id: 1,
+            latest_id: 0,
         }
     }
 
     pub fn add_global_frequency(&mut self, frequency: f32) {
-        self.global_frequencies
-            .push(GlobalFrequency::new(self.latest_id, frequency));
+        self.global_frequencies.insert(
+            self.latest_id,
+            GlobalFrequency::new(self.latest_id, frequency),
+        );
         self.latest_id += 1;
     }
 
@@ -65,12 +73,12 @@ impl State {
         // ids must match
         if relative_frequency.absolute_frequency_id != global_frequency_id {
             return Err(gui::error::Error::MismatchedFrequencyIds {
-                global_frequency_id: global_frequency_id,
+                global_frequency_id,
                 relative_frequency_id: relative_frequency.absolute_frequency_id,
             });
         }
         // global frequency id must be valid
-        let Some(global_frequency) = self.global_frequencies.get(global_frequency_id) else {
+        let Some(global_frequency) = self.global_frequencies.get(&global_frequency_id) else {
             return Err(gui::error::Error::InvalidGlobalFrequencyId(
                 global_frequency_id,
             ));
@@ -78,15 +86,20 @@ impl State {
         let shared_frequency = SharedFrequency::new(
             global_frequency.frequency() * relative_frequency.ratio.multiplicand(),
         );
+        let shared_volume_multiplier = SharedVolumeMultiplier::new(0.25);
         let oscillator_id = self
             .engine
             .lock()
             .unwrap()
             // this initializes a shared channel for updating the frequency of the oscillator remotely
             //  so you don't have to lock the entire audio engine for that
-            .add_oscillator(shared_frequency.clone());
-        self.relative_frequencies
-            .push((relative_frequency, Some(oscillator_id), shared_frequency));
+            .add_oscillator(shared_frequency.clone(), shared_volume_multiplier.clone());
+        self.relative_frequencies.push((
+            relative_frequency,
+            Some(oscillator_id),
+            shared_frequency,
+            shared_volume_multiplier,
+        ));
         Ok(())
     }
 
@@ -102,15 +115,22 @@ impl State {
     }
 
     pub fn update_global_frequency(&mut self, id: usize, message: GlobalFrequencyMessage) {
-        let Some(global_frequency) = self.global_frequencies.get_mut(id) else {
+        let Some(global_frequency) = self.global_frequencies.get_mut(&id) else {
             return;
         };
         global_frequency.update(message);
-        // TODO for all relative frequencies, update them
+
+        for (relative_frequency, _, shared_frequency, _) in self.relative_frequencies.iter_mut() {
+            if relative_frequency.absolute_frequency_id != id {
+                continue;
+            }
+            shared_frequency
+                .set(global_frequency.frequency() * relative_frequency.ratio.multiplicand());
+        }
     }
 
     pub fn update_relative_frequency(&mut self, id: usize, message: RelativeFrequencyMessage) {
-        let Some((relative_frequency, oscillator_id_option, shared_frequency)) =
+        let Some((relative_frequency, oscillator_id_option, shared_frequency, _)) =
             self.relative_frequencies.get_mut(id)
         else {
             return;
@@ -125,7 +145,7 @@ impl State {
         // update the audio engine to reflect these changes
         match self
             .global_frequencies
-            .get(relative_frequency.absolute_frequency_id)
+            .get(&relative_frequency.absolute_frequency_id)
         {
             Some(global_frequency) => {
                 shared_frequency
@@ -133,10 +153,7 @@ impl State {
             }
             // if referencing an invalid global frequency, remove the oscillator so no sound is produced
             None => {
-                self.engine
-                    .lock()
-                    .unwrap()
-                    .remove_oscillator(&oscillator_id);
+                self.engine.lock().unwrap().remove_oscillator(oscillator_id);
                 *oscillator_id_option = None;
             }
         }
@@ -170,17 +187,16 @@ fn update(state: &mut State, message: Message) {
         Message::AddGlobalFrequency => {
             state.add_global_frequency(42.0);
         }
-        Message::AddRelativeFrequency => {
-            state
-                .add_relative_frequency(
-                    0,
-                    RelativeFrequency {
-                        absolute_frequency_id: 0,
-                        ratio: Ratio::new(1, 1),
-                    },
-                )
-                .unwrap();
-        }
+        Message::AddRelativeFrequency => state
+            .add_relative_frequency(
+                0,
+                RelativeFrequency {
+                    absolute_frequency_id: 0,
+                    ratio: Ratio::new(1, 1),
+                    volume: -2.0,
+                },
+            )
+            .unwrap(),
         Message::WaveFormUpdated(waveform) => state.set_waveform(waveform),
         Message::VolumeUpdated(volume) => state.set_volume(volume),
     }
@@ -215,10 +231,12 @@ fn view(state: &State) -> Element<Message> {
             state
                 .global_frequencies
                 .iter()
-                .enumerate()
                 .map(|(index, freq)| {
                     freq.view()
-                        .map(move |message| Message::GlobalFrequencyUpdated { id: index, message })
+                        .map(move |message| Message::GlobalFrequencyUpdated {
+                            id: index.to_owned(),
+                            message,
+                        })
                 })
                 .chain(once(plus_button(150.0, 35.0, Message::AddGlobalFrequency)))
         )))
@@ -229,7 +247,7 @@ fn view(state: &State) -> Element<Message> {
                     .relative_frequencies
                     .iter()
                     .enumerate()
-                    .map(|(index, (relative_frequency, _, _))| relative_frequency
+                    .map(|(index, (relative_frequency, _, _, _))| relative_frequency
                         .view(state.global_frequencies.len())
                         .map(move |message| Message::RelativeFrequencyUpdated {
                             id: index,
@@ -247,7 +265,7 @@ fn view(state: &State) -> Element<Message> {
         .height(150)
         .max_width(672),
         container(column![
-            text("volume"),
+            text("master"),
             vertical_slider(-16.0..=0.0, state.volume.get(), Message::VolumeUpdated,)
         ])
         .height(150),
@@ -294,7 +312,7 @@ impl Iterator for AudioSource {
 
 impl Source for AudioSource {
     fn current_frame_len(&self) -> Option<usize> {
-        Some(256) // TODO: maybe set to None
+        None //TODO: maybe research this more
     }
 
     fn channels(&self) -> u16 {
@@ -313,10 +331,10 @@ impl Source for AudioSource {
 fn main() -> iced::Result {
     let engine = Arc::new(Mutex::new(AudioEngine::new(48000)));
 
-    let audio_source = AudioSource(engine.clone());
+    let audio_source = AudioSource(engine.clone()).low_pass(2000);
 
     let (_stream, stream_handle) = OutputStream::try_default().unwrap();
-    stream_handle.play_raw(audio_source.convert_samples());
+    let _ = stream_handle.play_raw(audio_source.convert_samples());
 
     let mut state = State::new(engine);
     state.add_global_frequency(220.0);

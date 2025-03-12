@@ -1,6 +1,6 @@
 use std::f32::consts::TAU;
 
-use super::engine::SharedFrequency;
+use super::engine::{SharedFrequency, SharedVolumeMultiplier};
 
 pub const WAVETABLE_SIZE: usize = 1024;
 
@@ -27,8 +27,8 @@ impl WaveTable {
     /// Create a wavetable from a periodic function of period 1
     pub fn from_fn(f: fn(f32) -> f32) -> Self {
         let mut table = [0f32; WAVETABLE_SIZE];
-        for i in 0..WAVETABLE_SIZE {
-            table[i] = f(i as f32 * ((WAVETABLE_SIZE as f32).recip()));
+        for (i, val) in table.iter_mut().enumerate() {
+            *val = f(i as f32 * ((WAVETABLE_SIZE as f32).recip()));
         }
         Self(table)
     }
@@ -65,19 +65,26 @@ pub enum WaveForm {
 }
 
 pub struct WaveTableOscillator {
-    sample_rate: usize,
+    _sample_rate: usize,
     sample_rate_recip: f32,
     frequency: SharedFrequency,
+    volume_multiplier: SharedVolumeMultiplier,
     wavetable: WaveTable,
     time: f32,
 }
 
 impl WaveTableOscillator {
-    pub fn new(sample_rate: usize, frequency: SharedFrequency, wavetable: WaveTable) -> Self {
+    pub fn new(
+        sample_rate: usize,
+        frequency: SharedFrequency,
+        volume_multiplier: SharedVolumeMultiplier,
+        wavetable: WaveTable,
+    ) -> Self {
         Self {
-            sample_rate,
+            _sample_rate: sample_rate,
             sample_rate_recip: (sample_rate as f32).recip(),
             frequency,
+            volume_multiplier,
             wavetable,
             time: 0f32,
         }
@@ -100,6 +107,7 @@ impl Iterator for WaveTableOscillator {
             .wavetable
             .get_interpolated_value(self.time * (WAVETABLE_SIZE as f32));
         self.time += self.frequency.get() * self.sample_rate_recip;
-        Some(sample)
+        self.time %= WAVETABLE_SIZE as f32;
+        Some(sample * self.volume_multiplier.get())
     }
 }
