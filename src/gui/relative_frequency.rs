@@ -22,7 +22,7 @@ impl RelativeFrequency {
                         iced::widget::Space::new(Length::Fill, Length::Shrink),
                         number_input(
                             &self.absolute_frequency_id,
-                            1..=max_id,
+                            0..=max_id + 1,
                             RelativeFrequencyMessage::AbsoluteFrequencyIdUpdated,
                         )
                         .width(40),
@@ -44,39 +44,49 @@ impl RelativeFrequency {
                 .align_x(Center)
                 .spacing(20),
                 vertical_slider(
-                    -16.0..=0.0,
+                    -6.0..=0.0,
                     self.volume,
                     RelativeFrequencyMessage::VolumeUpdated
                 )
+                .step(0.1)
             ]
             .spacing(5),
         )
         .padding(10)
-        .height(150)
+        .height(180)
         .style(|theme: &iced::Theme| {
             iced::widget::container::Style::default().border(
                 Border::default()
                     .width(1)
                     .rounded(2)
-                    .color(theme.palette().background.inverse().scale_alpha(0.2)),
+                    .color(theme.palette().background.inverse().scale_alpha(0.1)),
             )
         })
         .into()
     }
 
-    pub fn update(&mut self, message: RelativeFrequencyMessage) {
+    pub fn update(&mut self, message: RelativeFrequencyMessage) -> RelativeFrequencyStateUpdate {
         match message {
             RelativeFrequencyMessage::AbsoluteFrequencyIdUpdated(id) => {
                 self.absolute_frequency_id = id;
+                RelativeFrequencyStateUpdate::FrequencyUpdated
             }
             RelativeFrequencyMessage::RatioUpdated(message) => {
                 self.ratio.update(message);
+                RelativeFrequencyStateUpdate::FrequencyUpdated
             }
             RelativeFrequencyMessage::VolumeUpdated(new_volume) => {
                 self.volume = new_volume;
+                RelativeFrequencyStateUpdate::VolumeUpdated
             }
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum RelativeFrequencyStateUpdate {
+    FrequencyUpdated,
+    VolumeUpdated,
 }
 
 #[derive(Debug, Clone)]

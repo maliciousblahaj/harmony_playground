@@ -1,6 +1,7 @@
 use iced::{
-    widget::{container, row, text},
-    Border, Element,
+    alignment::Vertical,
+    widget::{container, horizontal_space, row, text},
+    Border, Element, Length,
 };
 use iced_aw::number_input;
 
@@ -30,6 +31,7 @@ impl GlobalFrequency {
         container(
             row![
                 text(format!("id: {}", self.id)),
+                horizontal_space().width(Length::Fill),
                 number_input(
                     &self.frequency,
                     1f32..=20000f32,
@@ -38,16 +40,17 @@ impl GlobalFrequency {
                 .width(100)
                 .step(1.0),
             ]
+            .align_y(Vertical::Center)
             .spacing(10),
         )
         .padding(10)
-        .width(150)
+        .width(200)
         .style(|theme: &iced::Theme| {
             iced::widget::container::Style::default().border(
                 Border::default()
                     .width(1)
                     .rounded(2)
-                    .color(theme.palette().background.inverse().scale_alpha(0.2)),
+                    .color(theme.palette().background.inverse().scale_alpha(0.1)),
             )
         })
         .into()
