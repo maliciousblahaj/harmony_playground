@@ -1,28 +1,84 @@
 use iced::{
-    widget::{column, container, row, text, vertical_slider},
+    widget::{button, column, container, row, text, vertical_slider, vertical_space},
     Alignment::Center,
     Border, Element, Length,
 };
 use iced_aw::number_input;
+use serde::{Deserialize, Serialize};
 
+use crate::icon;
+
+use super::icon_button;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 /// A struct for storing a gui element representing a frequency relative to a global frequency
 pub struct RelativeFrequency {
-    pub absolute_frequency_id: usize,
-    pub ratio: Ratio,
-    pub volume: f32,
+    absolute_frequency_id: usize,
+    ratio: Ratio,
+    volume: f32,
 }
 
 impl RelativeFrequency {
+    pub fn new(absolute_frequency_id: usize, ratio: Ratio, volume: f32) -> Self {
+        Self {
+            absolute_frequency_id,
+            ratio,
+            volume,
+        }
+    }
+
+    pub fn volume(&self) -> f32 {
+        self.volume
+    }
+
+    pub fn absolute_frequency_id(&self) -> usize {
+        self.absolute_frequency_id
+    }
+
+    pub fn ratio(&self) -> Ratio {
+        self.ratio
+    }
+
     pub fn view(&self, max_id: usize) -> Element<RelativeFrequencyMessage> {
+        let delete_button = icon_button(icon::cancel(), 12)
+            .on_press(RelativeFrequencyMessage::Deleted)
+            .style(|theme: &iced::Theme, status| button::Style {
+                background: Some(iced::Background::Color({
+                    let palette = theme.extended_palette();
+                    match status {
+                        button::Status::Active => palette.danger.base.color,
+                        button::Status::Hovered | button::Status::Pressed => {
+                            palette.danger.strong.color
+                        }
+                        button::Status::Disabled => palette.danger.weak.color,
+                    }
+                })),
+                ..Default::default()
+            });
+
+        let right_column = column![
+            delete_button.width(24),
+            vertical_slider(
+                -6.0..=0.0,
+                self.volume,
+                RelativeFrequencyMessage::VolumeUpdated
+            )
+            .step(0.1),
+            vertical_space().height(5)
+        ]
+        .width(Length::Shrink)
+        .spacing(10)
+        .align_x(Center);
+
         container(
             row![
                 column![
                     container(row![
-                        text("id"),
+                        text("id").width(Length::Shrink),
                         iced::widget::Space::new(Length::Fill, Length::Shrink),
                         number_input(
                             &self.absolute_frequency_id,
-                            0..=max_id + 1,
+                            0..=max_id,
                             RelativeFrequencyMessage::AbsoluteFrequencyIdUpdated,
                         )
                         .width(40),
@@ -30,7 +86,7 @@ impl RelativeFrequency {
                     .width(75),
                     container(
                         row![
-                            text("ratio"),
+                            text("ratio").width(Length::Shrink),
                             iced::widget::Space::new(Length::Fill, Length::Shrink),
                             self.ratio
                                 .view()
@@ -43,14 +99,9 @@ impl RelativeFrequency {
                 ]
                 .align_x(Center)
                 .spacing(20),
-                vertical_slider(
-                    -6.0..=0.0,
-                    self.volume,
-                    RelativeFrequencyMessage::VolumeUpdated
-                )
-                .step(0.1)
+                right_column,
             ]
-            .spacing(5),
+            .spacing(10),
         )
         .padding(10)
         .height(180)
@@ -65,20 +116,24 @@ impl RelativeFrequency {
         .into()
     }
 
-    pub fn update(&mut self, message: RelativeFrequencyMessage) -> RelativeFrequencyStateUpdate {
+    pub fn update(
+        &mut self,
+        message: RelativeFrequencyMessage,
+    ) -> Option<RelativeFrequencyStateUpdate> {
         match message {
             RelativeFrequencyMessage::AbsoluteFrequencyIdUpdated(id) => {
                 self.absolute_frequency_id = id;
-                RelativeFrequencyStateUpdate::FrequencyUpdated
+                Some(RelativeFrequencyStateUpdate::FrequencyUpdated)
             }
             RelativeFrequencyMessage::RatioUpdated(message) => {
                 self.ratio.update(message);
-                RelativeFrequencyStateUpdate::FrequencyUpdated
+                Some(RelativeFrequencyStateUpdate::FrequencyUpdated)
             }
             RelativeFrequencyMessage::VolumeUpdated(new_volume) => {
                 self.volume = new_volume;
-                RelativeFrequencyStateUpdate::VolumeUpdated
+                Some(RelativeFrequencyStateUpdate::VolumeUpdated)
             }
+            RelativeFrequencyMessage::Deleted => None,
         }
     }
 }
@@ -94,10 +149,11 @@ pub enum RelativeFrequencyMessage {
     AbsoluteFrequencyIdUpdated(usize),
     RatioUpdated(RatioMessage),
     VolumeUpdated(f32),
+    Deleted,
 }
 
 /// A struct for storing a mathematical ratio
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Ratio {
     pub numerator: u32,
     pub denominator: u32,

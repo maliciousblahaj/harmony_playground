@@ -1,5 +1,7 @@
 use std::f32::consts::TAU;
 
+use serde::{Deserialize, Serialize};
+
 use super::engine::{SharedFrequency, SharedVolumeMultiplier};
 
 pub const WAVETABLE_SIZE: usize = 1024;
@@ -52,16 +54,28 @@ impl WaveTable {
     }
 }
 
+impl Default for WaveTable {
+    fn default() -> Self {
+        Self::sine()
+    }
+}
+
 const fn lerp(sample0: f32, sample1: f32, t: f32) -> f32 {
     (1.0 - t) * sample0 + t * sample1
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WaveForm {
     Sine,
     Triangle,
     Square,
     Saw,
+}
+
+impl Default for WaveForm {
+    fn default() -> Self {
+        Self::Sine
+    }
 }
 
 pub struct WaveTableOscillator {

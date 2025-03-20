@@ -3,6 +3,8 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+use serde::{Deserialize, Serialize};
+
 use super::synthesizer::{WaveForm, WaveTable, WaveTableOscillator};
 
 /// A struct representing an audio engine, providing an api for things like creating, updating and deleting oscillators
@@ -10,24 +12,45 @@ pub struct AudioEngine {
     sample_rate: usize,
     wavetable: WaveTable,
     oscillators: BTreeMap<usize, WaveTableOscillator>,
-    _time: f32, // eventually used in the future for syncinc oscillators
+    _time: f32, // eventually used in the future for syncing oscillators
     volume_multiple: f32,
     volume: Volume,
     latestid: usize,
+    is_playing: bool,
 }
 
 impl AudioEngine {
     pub fn new(sample_rate: usize) -> Self {
-        let volume = Volume::new(f32::NEG_INFINITY);
+        let volume = Volume::new(-4.0);
         Self {
             sample_rate,
-            wavetable: WaveTable::sine(),
+            wavetable: WaveTable::default(),
             oscillators: BTreeMap::new(),
             _time: 0.0,
             volume_multiple: volume.multiple(),
             volume,
             latestid: 0,
+            is_playing: false,
         }
+    }
+
+    /// Reset the volume, wavetable and oscillators to their default values
+    pub fn reset(&mut self) {
+        let volume = Volume::new(-4.0);
+        self.volume = volume;
+        self.volume_multiple = volume.multiple();
+        self.wavetable = WaveTable::default();
+        self._time = 0.0;
+    }
+
+    /// Make the audio engine play
+    pub fn play(&mut self) {
+        self.is_playing = true;
+    }
+
+    /// Make the audio engine stop playing
+    pub fn stop(&mut self) {
+        self.is_playing = false;
     }
 
     /// Get the current volume
@@ -73,6 +96,11 @@ impl AudioEngine {
         self.oscillators.remove(id);
     }
 
+    /// Remove all oscillators from the engine
+    pub fn clear_oscillators(&mut self) {
+        self.oscillators.clear();
+    }
+
     ///// Sets the oscillator with the provided id's frequency
     //pub fn set_oscillator_frequency(&mut self, id: &usize, frequency: f32) {
     //    match self.oscillators.get_mut(id) {
@@ -100,6 +128,9 @@ impl Iterator for AudioEngine {
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if !self.is_playing {
+            return Some(0.0);
+        }
         let mut sum = 0.0;
         for osc in self.oscillators.values_mut() {
             sum += osc.next().unwrap_or(0.0);
@@ -109,7 +140,7 @@ impl Iterator for AudioEngine {
 }
 
 /// A struct representing a volume in base 2 gain. It is always clamped to be less than or equal to zero
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Volume(f32);
 
 impl Volume {

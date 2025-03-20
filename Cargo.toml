@@ -4,6 +4,19 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-iced = "0.13.1"
-iced_aw = { version = "0.12.2", default-features = false, features = ["number_input"] }
-rodio = "0.20.1"
+color-eyre = "0.6"
+iced = {version="0.13", features = ["tokio"] }
+#iced_aw = { version = "0.12", default-features = false, features = ["number_input"] }
+postcard = {version= "1.1", features = ["alloc"]}
+rfd = "0.15"
+rodio = "0.20"
+serde =  {version="1.0", features =["derive"]}
+tokio = { version = "1.44", features = ["fs"] }
+
+[dependencies.iced_aw]
+path = "../iced_aw" # local version where i fixed the bug of subtracting unsigned integers in src/widget/number_input.rs:470
+default-features = false
+features = ["number_input", "menu"]
+
+[build-dependencies]
+iced_fontello = "0.13"

@@ -4,8 +4,9 @@ use iced::{
     Border, Element, Length,
 };
 use iced_aw::number_input;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 /// A struct for storing the gui element representing a global frequency
 pub struct GlobalFrequency {
     /// The id of the global frequency, used for showing the user which indexed id the global frequency has

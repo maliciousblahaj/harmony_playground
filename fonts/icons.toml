@@ -1,0 +1,7 @@
+module = "icon"
+
+[glyphs]
+play = "fontawesome-play"
+stop = "fontawesome-stop"
+plus = "fontawesome-plus"
+cancel = "fontawesome-cancel"

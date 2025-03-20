@@ -1,6 +1,12 @@
+use iced_aw::iced_fonts;
+use postcard::to_allocvec;
+use serde::{Deserialize, Serialize};
+
 use std::{
     collections::BTreeMap,
+    io,
     iter::once,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
@@ -10,24 +16,32 @@ use harmony_playground::{
         synthesizer::WaveForm,
     },
     gui::{
-        self,
         global_frequency::{GlobalFrequency, GlobalFrequencyMessage},
+        icon_button,
         relative_frequency::{
             Ratio, RelativeFrequency, RelativeFrequencyMessage, RelativeFrequencyStateUpdate,
         },
     },
+    icon,
 };
 use iced::{
     alignment::Horizontal,
     widget::{
         button, column, combo_box, container, horizontal_space, radio, row,
         scrollable::{Direction, Scrollbar},
-        text, vertical_slider, vertical_space, Text,
+        text, vertical_slider, vertical_space,
     },
-    Alignment::Center,
     Element, Length, Task,
 };
 use rodio::{OutputStream, Source};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct StateSave {
+    volume: Volume,
+    waveform: WaveForm,
+    global_frequencies: BTreeMap<usize, GlobalFrequency>,
+    relative_frequencies: Vec<RelativeFrequency>,
+}
 
 struct State {
     engine: Arc<Mutex<AudioEngine>>,
@@ -38,80 +52,210 @@ struct State {
     global_frequencies: BTreeMap<usize, GlobalFrequency>,
     /// Stores the relative frequency, its corresponding oscillator id for future possible deletion,
     /// and its corresponding shared frequency for simply updating the oscillator
-    relative_frequencies: Vec<(
-        RelativeFrequency,
-        Option<usize>,
-        SharedFrequency,
-        SharedVolumeMultiplier,
-    )>,
-    latest_id: usize,
+    relative_frequencies: BTreeMap<
+        usize,
+        (
+            RelativeFrequency,
+            Option<usize>,
+            SharedFrequency,
+            SharedVolumeMultiplier,
+        ),
+    >,
     theme: iced::Theme,
     theme_selector_state: iced::widget::combo_box::State<iced::Theme>,
+    is_loading: bool,
+    /// If a file is open, this contains the path and a boolean indicating if the file is saved or not
+    file: Option<(PathBuf, bool)>,
+    current_error: Option<Error>,
 }
 
 impl State {
     pub fn new(engine: Arc<Mutex<AudioEngine>>) -> Self {
         let volume = engine.lock().unwrap().get_volume();
+        let waveform = WaveForm::default();
+        {
+            let mut engine = engine.lock().unwrap();
+            engine.clear_oscillators();
+            engine.set_waveform(waveform);
+        }
         Self {
             engine,
-            waveform: Some(WaveForm::Sine),
+            waveform: Some(waveform),
             volume,
             global_frequencies: BTreeMap::new(),
-            relative_frequencies: Vec::new(),
-            latest_id: 1,
+            relative_frequencies: BTreeMap::new(),
             theme: iced::Theme::Dark,
             theme_selector_state: iced::widget::combo_box::State::new(Vec::from(iced::Theme::ALL)),
+            is_loading: false,
+            file: None,
+            current_error: None,
         }
     }
 
-    pub fn add_global_frequency(&mut self, frequency: f32) {
-        self.global_frequencies.insert(
-            self.latest_id,
-            GlobalFrequency::new(self.latest_id, frequency),
-        );
-        self.latest_id += 1;
+    pub fn to_save(&self) -> StateSave {
+        StateSave {
+            volume: self.volume,
+            waveform: self.waveform.unwrap_or(WaveForm::Sine),
+            global_frequencies: self.global_frequencies.clone(),
+            relative_frequencies: self
+                .relative_frequencies
+                .iter()
+                .map(|(_, (relative_frequency, _, _, _))| relative_frequency.clone())
+                .collect(),
+        }
     }
 
-    pub fn add_relative_frequency(
-        &mut self,
-        global_frequency_id: usize,
-        relative_frequency: RelativeFrequency,
-    ) -> Result<(), gui::error::Error> {
-        // ids must match
-        if relative_frequency.absolute_frequency_id != global_frequency_id {
-            return Err(gui::error::Error::MismatchedFrequencyIds {
-                global_frequency_id,
-                relative_frequency_id: relative_frequency.absolute_frequency_id,
-            });
+    /// If an error occurs, run it through this function to display it to the user
+    pub fn set_error(&mut self, error: Error) {
+        match error {
+            Error::FileDialogClosed => {}
+            Error::IO(_) | Error::Postcard(_) => {
+                self.current_error = Some(error);
+            }
+        };
+    }
+
+    /// Function that should be called after every change to display to the user that they need to save
+    pub fn unsave(&mut self) {
+        if let Some((_, ref mut is_saved)) = self.file {
+            *is_saved = false;
         }
-        // global frequency id must be valid
-        let Some(global_frequency) = self.global_frequencies.get(&global_frequency_id) else {
-            self.relative_frequencies.push((
-                relative_frequency,
-                None,
-                SharedFrequency::new(220.0),
-                SharedVolumeMultiplier::new(0.25),
-            ));
-            return Ok(());
+    }
+
+    /// Returns the oscillator id and shared frequency if it succeeds to initialize, else None
+    pub fn initialize_oscillator(
+        engine: &Arc<Mutex<AudioEngine>>,
+        global_frequencies: &BTreeMap<usize, GlobalFrequency>,
+        relative_frequency: &RelativeFrequency,
+    ) -> (Option<(usize, SharedFrequency)>, SharedVolumeMultiplier) {
+        let shared_volume_multiplier =
+            SharedVolumeMultiplier::new(Volume::new(relative_frequency.volume()).multiple());
+        // if global frequency doesn't exist, don't create an oscillator
+        let Some(global_frequency) =
+            global_frequencies.get(&relative_frequency.absolute_frequency_id())
+        else {
+            return (None, shared_volume_multiplier);
         };
         let shared_frequency = SharedFrequency::new(
-            global_frequency.frequency() * relative_frequency.ratio.multiplicand(),
+            global_frequency.frequency() * relative_frequency.ratio().multiplicand(),
         );
-        let shared_volume_multiplier = SharedVolumeMultiplier::new(0.25);
-        let oscillator_id = self
-            .engine
+        let oscillator_id = engine
             .lock()
             .unwrap()
             // this initializes a shared channel for updating the frequency of the oscillator remotely
             //  so you don't have to lock the entire audio engine for that
             .add_oscillator(shared_frequency.clone(), shared_volume_multiplier.clone());
-        self.relative_frequencies.push((
-            relative_frequency,
-            Some(oscillator_id),
-            shared_frequency,
+        (
+            Some((oscillator_id, shared_frequency)),
             shared_volume_multiplier,
-        ));
-        Ok(())
+        )
+    }
+
+    pub fn from_save(
+        engine: Arc<Mutex<AudioEngine>>,
+        save: Arc<StateSave>,
+        file_path: Option<PathBuf>,
+        theme: iced::Theme,
+    ) -> Self {
+        let save = Arc::unwrap_or_clone(save);
+        {
+            let mut engine = engine.lock().unwrap();
+            engine.clear_oscillators();
+            engine.set_volume(save.volume);
+            engine.set_waveform(save.waveform);
+        }
+
+        let relative_frequencies = save
+            .relative_frequencies
+            .into_iter()
+            .enumerate()
+            .map(|(index, relative_frequency)| {
+                let (oscillator_id, shared_frequency, shared_volume_multiplier) =
+                    match Self::initialize_oscillator(
+                        &engine,
+                        &save.global_frequencies,
+                        &relative_frequency,
+                    ) {
+                        (Some((oscillator_id, shared_frequency)), shared_volume_multiplier) => (
+                            Some(oscillator_id),
+                            shared_frequency,
+                            shared_volume_multiplier,
+                        ),
+                        (None, shared_volume_multiplier) => {
+                            println!("failed to initialize oscillator");
+                            (None, SharedFrequency::new(220.0), shared_volume_multiplier)
+                        }
+                    };
+
+                (
+                    index,
+                    (
+                        relative_frequency,
+                        oscillator_id,
+                        shared_frequency,
+                        shared_volume_multiplier,
+                    ),
+                )
+            })
+            .collect();
+
+        Self {
+            engine,
+            volume: save.volume,
+            waveform: Some(save.waveform),
+            global_frequencies: save.global_frequencies,
+            relative_frequencies,
+            theme,
+            theme_selector_state: iced::widget::combo_box::State::new(Vec::from(iced::Theme::ALL)),
+            is_loading: false,
+            file: file_path.map(|path| (path, true)),
+            current_error: None,
+        }
+    }
+
+    pub fn add_global_frequency(&mut self, frequency: f32) {
+        let latest_id = self
+            .global_frequencies
+            .last_key_value()
+            .map(|(id, _)| id + 1)
+            .unwrap_or(1);
+
+        self.global_frequencies
+            .insert(latest_id, GlobalFrequency::new(latest_id, frequency));
+    }
+
+    pub fn add_relative_frequency(&mut self, relative_frequency: RelativeFrequency) {
+        let (oscillator_id, shared_frequency, shared_volume_multiplier) =
+            match Self::initialize_oscillator(
+                &self.engine,
+                &self.global_frequencies,
+                &relative_frequency,
+            ) {
+                (Some((oscillator_id, shared_frequency)), shared_volume_multiplier) => (
+                    Some(oscillator_id),
+                    shared_frequency,
+                    shared_volume_multiplier,
+                ),
+                (None, shared_volume_multiplier) => {
+                    (None, SharedFrequency::new(220.0), shared_volume_multiplier)
+                }
+            };
+
+        let latest_id = self
+            .relative_frequencies
+            .last_key_value()
+            .map(|(id, _)| id + 1)
+            .unwrap_or(0);
+
+        self.relative_frequencies.insert(
+            latest_id,
+            (
+                relative_frequency,
+                oscillator_id,
+                shared_frequency,
+                shared_volume_multiplier,
+            ),
+        );
     }
 
     pub fn set_waveform(&mut self, waveform: WaveForm) {
@@ -134,12 +278,12 @@ impl State {
         };
         global_frequency.update(message);
 
-        for (relative_frequency, _, shared_frequency, _) in self.relative_frequencies.iter_mut() {
-            if relative_frequency.absolute_frequency_id != id {
+        for (relative_frequency, _, shared_frequency, _) in self.relative_frequencies.values_mut() {
+            if relative_frequency.absolute_frequency_id() != id {
                 continue;
             }
             shared_frequency
-                .set(global_frequency.frequency() * relative_frequency.ratio.multiplicand());
+                .set(global_frequency.frequency() * relative_frequency.ratio().multiplicand());
         }
     }
 
@@ -149,7 +293,7 @@ impl State {
             oscillator_id_option,
             shared_frequency,
             shared_volume_multiplier,
-        )) = self.relative_frequencies.get_mut(id)
+        )) = self.relative_frequencies.get_mut(&id)
         else {
             return;
         };
@@ -171,15 +315,16 @@ impl State {
 
         // update the audio engine to reflect these changes
         match state_update {
-            RelativeFrequencyStateUpdate::FrequencyUpdated => {
+            Some(RelativeFrequencyStateUpdate::FrequencyUpdated) => {
                 // update the frequency
                 match self
                     .global_frequencies
-                    .get(&relative_frequency.absolute_frequency_id)
+                    .get(&relative_frequency.absolute_frequency_id())
                 {
                     Some(global_frequency) => {
                         shared_frequency.set(
-                            global_frequency.frequency() * relative_frequency.ratio.multiplicand(),
+                            global_frequency.frequency()
+                                * relative_frequency.ratio().multiplicand(),
                         );
                     }
                     // if referencing an invalid global frequency, remove the oscillator so no sound is produced
@@ -192,11 +337,50 @@ impl State {
                     }
                 }
             }
-            RelativeFrequencyStateUpdate::VolumeUpdated => {
-                let volume_multiplier = Volume::new(relative_frequency.volume).multiple();
+            Some(RelativeFrequencyStateUpdate::VolumeUpdated) => {
+                let volume_multiplier = Volume::new(relative_frequency.volume()).multiple();
                 shared_volume_multiplier.set(volume_multiplier)
             }
+            None => {}
         }
+    }
+
+    pub fn delete_relative_frequency(&mut self, id: usize) {
+        let Some((_, oscillator_id_option, _, _)) = self.relative_frequencies.remove(&id) else {
+            println!("deleted non-existent relative frequency");
+            return;
+        };
+        if let Some(oscillator_id) = oscillator_id_option {
+            self.engine
+                .lock()
+                .unwrap()
+                .remove_oscillator(&oscillator_id);
+        }
+    }
+}
+
+/// The main error type
+#[derive(Debug, Clone)]
+enum Error {
+    FileDialogClosed,
+    #[allow(dead_code)]
+    IO(io::ErrorKind), // TODO: handle these errors by displaying them, then remove the allow macro
+    /// Errors related to serialization and deserialization of the postcard binary format
+    #[allow(dead_code)]
+    Postcard(postcard::Error),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Error::FileDialogClosed => String::from("File dialog closed"),
+                Error::IO(error_kind) => error_kind.to_string(),
+                Error::Postcard(error) => error.to_string(),
+            }
+        )
     }
 }
 
@@ -210,191 +394,331 @@ enum Message {
         id: usize,
         message: RelativeFrequencyMessage,
     },
+    RelativeFrequencyDeleted(usize),
     AddGlobalFrequency,
     AddRelativeFrequency,
     WaveFormUpdated(WaveForm),
     VolumeUpdated(f32),
+    PlayPressed,
+    StopPressed,
     ThemeUpdated(iced::Theme),
+    NewFile,
+    SaveFile,
+    OpenFile,
+    SaveLoaded(Result<(PathBuf, Arc<StateSave>), Error>),
+    StateSaved(Result<PathBuf, Error>),
 }
+impl State {
+    fn title(&self) -> String {
+        let (path, has_saved) = self
+            .file
+            .as_ref()
+            .map(|(path, saved)| {
+                (
+                    path.as_os_str()
+                        .to_str()
+                        .unwrap_or("Unable to display file path"),
+                    *saved,
+                )
+            })
+            .unwrap_or(("New file", false));
+        format!(
+            "{}Harmony playground - {path}",
+            if has_saved { "" } else { "*" }
+        )
+    }
 
-fn update(state: &mut State, message: Message) {
-    match message {
-        Message::GlobalFrequencyUpdated { id, message } => {
-            state.update_global_frequency(id, message);
-        }
-        Message::RelativeFrequencyUpdated { id, message } => {
-            state.update_relative_frequency(id, message);
-        }
-        Message::AddGlobalFrequency => {
-            state.add_global_frequency(42.0);
-        }
-        Message::AddRelativeFrequency => state
-            .add_relative_frequency(
-                0,
-                RelativeFrequency {
-                    absolute_frequency_id: 0,
-                    ratio: Ratio::new(1, 1),
-                    volume: -2.0,
-                },
-            )
-            .unwrap(),
-        Message::WaveFormUpdated(waveform) => {
-            state.set_waveform(waveform);
-        }
-        Message::VolumeUpdated(volume) => {
-            state.set_volume(volume);
-        }
-        Message::ThemeUpdated(theme) => {
-            state.theme = theme;
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::GlobalFrequencyUpdated { id, message } => {
+                self.update_global_frequency(id, message);
+                self.unsave();
+                Task::none()
+            }
+            Message::RelativeFrequencyUpdated { id, message } => {
+                self.update_relative_frequency(id, message);
+                self.unsave();
+                Task::none()
+            }
+            Message::RelativeFrequencyDeleted(id) => {
+                self.delete_relative_frequency(id);
+                self.unsave();
+                Task::none()
+            }
+            Message::AddGlobalFrequency => {
+                self.add_global_frequency(42.0);
+                self.unsave();
+                Task::none()
+            }
+            Message::AddRelativeFrequency => {
+                self.add_relative_frequency(RelativeFrequency::new(0, Ratio::new(1, 1), -2.0));
+                self.unsave();
+                Task::none()
+            }
+            Message::WaveFormUpdated(waveform) => {
+                self.set_waveform(waveform);
+                self.unsave();
+                Task::none()
+            }
+            Message::VolumeUpdated(volume) => {
+                self.set_volume(volume);
+                self.unsave();
+                Task::none()
+            }
+            Message::ThemeUpdated(theme) => {
+                self.theme = theme;
+                Task::none()
+            }
+
+            Message::NewFile => {
+                if !self.is_loading {
+                    self.engine.lock().unwrap().reset();
+                    *self = Self::new(self.engine.clone());
+                }
+                Task::none()
+            }
+            Message::SaveFile => {
+                if self.is_loading {
+                    Task::none()
+                } else {
+                    self.is_loading = true;
+
+                    Task::perform(
+                        save_file(None, Arc::new(self.to_save())),
+                        Message::StateSaved,
+                    )
+                }
+            }
+            Message::OpenFile => {
+                if self.is_loading {
+                    Task::none()
+                } else {
+                    self.is_loading = true;
+
+                    Task::perform(open_file(), Message::SaveLoaded)
+                }
+            }
+            Message::SaveLoaded(result) => {
+                self.is_loading = false;
+
+                match result {
+                    Ok((path, save)) => {
+                        *self = Self::from_save(
+                            self.engine.clone(),
+                            save,
+                            Some(path),
+                            self.theme.clone(),
+                        );
+                    }
+                    Err(error) => {
+                        self.set_error(error);
+                    }
+                }
+
+                Task::none()
+            }
+            Message::StateSaved(result) => {
+                self.is_loading = false;
+
+                match result {
+                    Ok(path) => {
+                        self.file = Some((path, true));
+                    }
+                    Err(error) => {
+                        self.set_error(error);
+                    }
+                }
+
+                Task::none()
+            }
+            Message::PlayPressed => {
+                self.engine.lock().unwrap().play();
+                Task::none()
+            }
+            Message::StopPressed => {
+                self.engine.lock().unwrap().stop();
+                Task::none()
+            }
         }
     }
-}
 
-fn view(state: &State) -> Element<Message> {
-    let global_frequencies = iced::widget::scrollable(
-        column(
-            state
-                .global_frequencies
+    fn view(&self) -> Element<Message> {
+        let global_frequencies = iced::widget::scrollable(
+            column(
+                self.global_frequencies
+                    .iter()
+                    .map(|(index, freq)| {
+                        freq.view()
+                            .map(move |message| Message::GlobalFrequencyUpdated {
+                                id: index.to_owned(),
+                                message,
+                            })
+                    })
+                    .chain(once(
+                        icon_button(icon::plus(), 14)
+                            .on_press(Message::AddGlobalFrequency)
+                            .width(200)
+                            .into(),
+                    )),
+            )
+            .spacing(1),
+        );
+
+        let relative_frequencies = iced::widget::scrollable(
+            row(self
+                .relative_frequencies
                 .iter()
-                .map(|(index, freq)| {
-                    freq.view()
-                        .map(move |message| Message::GlobalFrequencyUpdated {
-                            id: index.to_owned(),
-                            message,
+                .map(|(id, (relative_frequency, _, _, _))| {
+                    relative_frequency
+                        .view(self.global_frequencies.len())
+                        .map(move |message| match message {
+                            RelativeFrequencyMessage::Deleted => {
+                                Message::RelativeFrequencyDeleted(*id)
+                            }
+                            message => Message::RelativeFrequencyUpdated { id: *id, message },
                         })
                 })
                 .chain(once(
-                    iced::widget::button(Text::new("+").align_x(Center).align_y(Center).size(20))
-                        .on_press(Message::AddGlobalFrequency)
-                        .width(200)
+                    icon_button(icon::plus(), 14)
+                        .on_press(Message::AddRelativeFrequency)
+                        .height(200)
                         .into(),
-                )),
+                )))
+            .spacing(1),
         )
-        .spacing(1),
-    );
+        .direction(Direction::Horizontal(Scrollbar::new()));
 
-    let relative_frequencies = iced::widget::scrollable(
-        row(state
-            .relative_frequencies
-            .iter()
-            .enumerate()
-            .map(|(index, (relative_frequency, _, _, _))| {
-                relative_frequency
-                    .view(state.global_frequencies.len() - 1)
-                    .map(move |message| Message::RelativeFrequencyUpdated { id: index, message })
+        let master_volume_slider = column![
+            text("Master"),
+            vertical_slider(-10.0..=0.0, self.volume.get(), Message::VolumeUpdated,).step(0.1)
+        ]
+        .align_x(Horizontal::Center)
+        .height(Length::Fill);
+
+        let waveform_selection = column![
+            radio(
+                "Sine",
+                WaveForm::Sine,
+                self.waveform,
+                Message::WaveFormUpdated
+            ),
+            radio(
+                "Triangle",
+                WaveForm::Triangle,
+                self.waveform,
+                Message::WaveFormUpdated
+            ),
+            radio(
+                "Square",
+                WaveForm::Square,
+                self.waveform,
+                Message::WaveFormUpdated
+            ),
+            radio(
+                "Saw",
+                WaveForm::Saw,
+                self.waveform,
+                Message::WaveFormUpdated
+            ),
+        ]
+        .spacing(12.5);
+
+        let theme_selection = combo_box(
+            &self.theme_selector_state,
+            "Select theme",
+            Some(&self.theme),
+            Message::ThemeUpdated,
+        );
+
+        let audio_button = |icon, message| {
+            icon_button(icon, 18)
+                .on_press(message)
+                .style(|theme: &iced::Theme, status| button::Style {
+                    background: None,
+                    text_color: {
+                        let palette = theme.extended_palette();
+                        match status {
+                            button::Status::Active => palette.secondary.base.color,
+                            button::Status::Disabled => palette.secondary.weak.color,
+                            button::Status::Hovered | button::Status::Pressed => {
+                                palette.secondary.strong.color
+                            }
+                        }
+                    },
+                    ..Default::default()
+                })
+        };
+
+        let top_bar = row![
+            // TODO: add a dialog asking if the user wants to save before creating a new one or opening
+            button("New").on_press(Message::NewFile),
+            button("Open").on_press(Message::OpenFile),
+            button("Save").on_press(Message::SaveFile),
+            horizontal_space().width(Length::Fill),
+            audio_button(icon::play(), Message::PlayPressed),
+            audio_button(icon::stop(), Message::StopPressed),
+            horizontal_space().width(Length::Fill),
+            container(theme_selection).width(150)
+        ]
+        .spacing(10);
+
+        let bottom_bar = row![
+            text(match self.current_error {
+                Some(_) => "ERROR", //TODO: make this more informative
+                None => "",
             })
-            .chain(once(
-                iced::widget::button(Text::new("+").align_x(Center).align_y(Center).size(20))
-                    .on_press(Message::AddRelativeFrequency)
+            .style(|theme: &iced::Theme| {
+                text::Style {
+                    color: Some(theme.palette().danger),
+                }
+            })
+            .size(15),
+            horizontal_space().width(Length::Fill),
+        ];
+
+        container(
+            column![
+                top_bar,
+                row![
+                    container(
+                        column![text("Frequencies"), global_frequencies]
+                            .align_x(Horizontal::Center)
+                    )
+                    .padding(5)
+                    .width(200)
+                    .style(|theme: &iced::Theme| {
+                        iced::widget::container::Style::default().border(
+                            iced::Border::default()
+                                .width(1)
+                                .rounded(2)
+                                .color(theme.palette().background.inverse().scale_alpha(0.4)),
+                        )
+                    }),
+                    container(
+                        column![
+                            text("Frequency Ratios"),
+                            container(relative_frequencies).width(Length::Fill)
+                        ]
+                        .align_x(Horizontal::Center)
+                    )
+                    .padding(5)
                     .height(200)
-                    .into(),
-            )))
-        .spacing(1),
-    )
-    .direction(Direction::Horizontal(Scrollbar::new()));
-
-    let master_volume_slider = column![
-        text("master"),
-        vertical_slider(-10.0..=0.0, state.volume.get(), Message::VolumeUpdated,).step(0.1)
-    ]
-    .align_x(Horizontal::Center)
-    .height(Length::Fill);
-
-    let waveform_selection = column![
-        radio(
-            "Sine",
-            WaveForm::Sine,
-            state.waveform,
-            Message::WaveFormUpdated
-        ),
-        radio(
-            "Triangle",
-            WaveForm::Triangle,
-            state.waveform,
-            Message::WaveFormUpdated
-        ),
-        radio(
-            "Square",
-            WaveForm::Square,
-            state.waveform,
-            Message::WaveFormUpdated
-        ),
-        radio(
-            "Saw",
-            WaveForm::Saw,
-            state.waveform,
-            Message::WaveFormUpdated
-        ),
-    ]
-    .spacing(10);
-
-    let theme_selection = combo_box(
-        &state.theme_selector_state,
-        "Select theme",
-        Some(&state.theme),
-        Message::ThemeUpdated,
-    );
-
-    let top_bar = row![
-        button("Load"), // TODO implement loading saves
-        button("Save"), // TODO implement saving
-        horizontal_space().width(Length::Fill),
-        container(theme_selection).width(150)
-    ]
-    .spacing(10);
-    container(
-        column![
-            top_bar,
-            row![
-                container(
-                    column![text("Frequencies"), global_frequencies].align_x(Horizontal::Center)
-                )
-                .padding(5)
-                .width(200)
-                .style(|theme: &iced::Theme| {
-                    iced::widget::container::Style::default().border(
-                        iced::Border::default()
-                            .width(1)
-                            .rounded(2)
-                            .color(theme.palette().background.inverse().scale_alpha(0.4)),
+                    .style(|theme: &iced::Theme| {
+                        iced::widget::container::Style::default().border(
+                            iced::Border::default()
+                                .width(1)
+                                .rounded(2)
+                                .color(theme.palette().background.inverse().scale_alpha(0.4)),
+                        )
+                    }),
+                    container(
+                        column![
+                            text("Waveform"),
+                            vertical_space().height(Length::Fill),
+                            waveform_selection
+                        ]
+                        .align_x(Horizontal::Center)
                     )
-                }),
-                container(
-                    column![
-                        text("Frequency Ratios"),
-                        container(relative_frequencies).width(Length::Fill)
-                    ]
-                    .align_x(Horizontal::Center)
-                )
-                .padding(5)
-                .height(200)
-                .style(|theme: &iced::Theme| {
-                    iced::widget::container::Style::default().border(
-                        iced::Border::default()
-                            .width(1)
-                            .rounded(2)
-                            .color(theme.palette().background.inverse().scale_alpha(0.4)),
-                    )
-                }),
-                container(
-                    column![
-                        text("Waveform"),
-                        vertical_space().height(Length::Fill),
-                        waveform_selection
-                    ]
-                    .align_x(Horizontal::Center)
-                )
-                .max_height(200)
-                .padding(10)
-                .style(|theme: &iced::Theme| {
-                    iced::widget::container::Style::default().border(
-                        iced::Border::default()
-                            .width(1)
-                            .rounded(2)
-                            .color(theme.palette().background.inverse().scale_alpha(0.4)),
-                    )
-                }),
-                container(master_volume_slider)
                     .max_height(200)
                     .padding(10)
                     .style(|theme: &iced::Theme| {
@@ -405,14 +729,75 @@ fn view(state: &State) -> Element<Message> {
                                 .color(theme.palette().background.inverse().scale_alpha(0.4)),
                         )
                     }),
+                    container(master_volume_slider)
+                        .max_height(200)
+                        .padding(10)
+                        .style(|theme: &iced::Theme| {
+                            iced::widget::container::Style::default().border(
+                                iced::Border::default()
+                                    .width(1)
+                                    .rounded(2)
+                                    .color(theme.palette().background.inverse().scale_alpha(0.4)),
+                            )
+                        }),
+                ]
+                //.height(150)
+                .spacing(10),
+                bottom_bar,
             ]
-            //.height(150)
-            .spacing(10)
-        ]
-        .spacing(10),
-    )
-    .padding(10)
-    .into()
+            .spacing(10),
+        )
+        .padding(10)
+        .into()
+    }
+}
+async fn open_file() -> Result<(PathBuf, Arc<StateSave>), Error> {
+    let picked_file = rfd::AsyncFileDialog::new()
+        .set_title("Open a file...")
+        .add_filter("Harmony playground file", &["harm"])
+        .pick_file()
+        .await
+        .ok_or(Error::FileDialogClosed)?;
+
+    load_file(picked_file).await
+}
+
+async fn load_file(path: impl Into<PathBuf>) -> Result<(PathBuf, Arc<StateSave>), Error> {
+    let path = path.into();
+
+    let contents = tokio::fs::read(&path)
+        .await
+        .map(|bytevec| postcard::from_bytes(&bytevec))
+        .map_err(|tokio_fs_error| Error::IO(tokio_fs_error.kind()))?
+        .map(Arc::new)
+        .map_err(Error::Postcard)?;
+
+    Ok((path, contents))
+}
+
+async fn save_file(path: Option<PathBuf>, state_save: Arc<StateSave>) -> Result<PathBuf, Error> {
+    let path = if let Some(path) = path {
+        path
+    } else {
+        rfd::AsyncFileDialog::new()
+            .add_filter("Harmony playground file", &["harm"])
+            .save_file()
+            .await
+            .as_ref()
+            .map(rfd::FileHandle::path)
+            .map(std::path::Path::to_owned)
+            .ok_or(Error::FileDialogClosed)?
+    };
+
+    let contents = to_allocvec(&*state_save).map_err(Error::Postcard)?;
+
+    tokio::fs::write(&path, contents)
+        .await
+        .map_err(|error| Error::IO(error.kind()))?;
+
+    println!("saved to file {path:?}");
+
+    Ok(path)
 }
 
 struct AudioSource(Arc<Mutex<AudioEngine>>);
@@ -443,7 +828,9 @@ impl Source for AudioSource {
     }
 }
 
-fn main() -> iced::Result {
+fn main() -> color_eyre::eyre::Result<()> {
+    color_eyre::install()?;
+
     let engine = Arc::new(Mutex::new(AudioEngine::new(48000)));
 
     let audio_source = AudioSource(engine.clone()).low_pass(2000);
@@ -451,10 +838,13 @@ fn main() -> iced::Result {
     let (_stream, stream_handle) = OutputStream::try_default().unwrap();
     let _ = stream_handle.play_raw(audio_source.convert_samples());
 
-    let mut state = State::new(engine);
-    state.add_global_frequency(220.0);
+    let state = State::new(engine);
 
-    iced::application("Harmony Playground", update, view)
+    iced::application(State::title, State::update, State::view)
         .theme(|state| state.theme.clone())
+        .font(icon::FONT)
+        .font(iced_fonts::REQUIRED_FONT_BYTES)
         .run_with(move || (state, Task::none()))
+        .unwrap();
+    Ok(())
 }
