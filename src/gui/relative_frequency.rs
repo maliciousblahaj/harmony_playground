@@ -1,12 +1,13 @@
 use iced::{
-    widget::{button, column, container, row, text, vertical_slider, vertical_space},
     Alignment::Center,
-    Border, Element, Length,
+    Border, Color, Element, Length,
+    alignment::Horizontal,
+    widget::{button, column, container, row, text, vertical_slider, vertical_space},
 };
 use iced_aw::number_input;
 use serde::{Deserialize, Serialize};
 
-use crate::icon;
+use crate::{audio::theory::Note, icon};
 
 use super::icon_button;
 
@@ -39,7 +40,9 @@ impl RelativeFrequency {
         self.ratio
     }
 
-    pub fn view(&self, max_id: usize) -> Element<RelativeFrequencyMessage> {
+    pub fn view(&self, max_id: usize, played_frequency: f32) -> Element<RelativeFrequencyMessage> {
+        let note = Note::from_frequency(played_frequency);
+
         let delete_button = icon_button(icon::cancel(), 12)
             .on_press(RelativeFrequencyMessage::Deleted)
             .style(|theme: &iced::Theme, status| button::Style {
@@ -71,37 +74,48 @@ impl RelativeFrequency {
         .align_x(Center);
 
         container(
-            row![
-                column![
-                    container(row![
-                        text("id").width(Length::Shrink),
-                        iced::widget::Space::new(Length::Fill, Length::Shrink),
-                        number_input(
-                            &self.absolute_frequency_id,
-                            0..=max_id,
-                            RelativeFrequencyMessage::AbsoluteFrequencyIdUpdated,
-                        )
-                        .width(40),
-                    ])
-                    .width(75),
-                    container(
-                        row![
-                            text("ratio").width(Length::Shrink),
+            column![
+                row![
+                    column![
+                        container(row![
+                            text("id").width(Length::Shrink),
                             iced::widget::Space::new(Length::Fill, Length::Shrink),
-                            self.ratio
-                                .view()
-                                .map(RelativeFrequencyMessage::RatioUpdated)
-                        ]
-                        .align_y(Center)
-                        .spacing(5)
-                    )
-                    .width(75),
+                            number_input(
+                                &self.absolute_frequency_id,
+                                0..=max_id,
+                                RelativeFrequencyMessage::AbsoluteFrequencyIdUpdated,
+                            )
+                            .width(40),
+                        ])
+                        .width(75),
+                        container(
+                            row![
+                                text("ratio").width(Length::Shrink),
+                                iced::widget::Space::new(Length::Fill, Length::Shrink),
+                                self.ratio
+                                    .view()
+                                    .map(RelativeFrequencyMessage::RatioUpdated)
+                            ]
+                            .align_y(Center)
+                            .spacing(5)
+                        )
+                        .width(75),
+                    ]
+                    .align_x(Center)
+                    .spacing(20),
+                    right_column,
                 ]
-                .align_x(Center)
-                .spacing(20),
-                right_column,
+                .spacing(10),
+                text(if self.absolute_frequency_id == 0 {
+                    String::new()
+                } else {
+                    note.to_string()
+                })
+                .color(Color::from_rgb(0.5, 0.5, 0.5))
+                .size(10),
             ]
-            .spacing(10),
+            .spacing(2)
+            .align_x(Horizontal::Center),
         )
         .padding(10)
         .height(180)

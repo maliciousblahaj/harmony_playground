@@ -17,6 +17,10 @@ pub struct AudioEngine {
     volume: Volume,
     latestid: usize,
     is_playing: bool,
+    // // DEBUG: used for measuring if the sample_rate is correct
+    // last_sample_time: std::time::Instant,
+    // last_sample_index: usize, // mod 48000
+    // last_sample_durations: [f32; 48000],
 }
 
 impl AudioEngine {
@@ -31,6 +35,9 @@ impl AudioEngine {
             volume,
             latestid: 0,
             is_playing: false,
+            // last_sample_time: std::time::Instant::now(),
+            // last_sample_index: 0,
+            // last_sample_durations: [1.0; 48000],
         }
     }
 
@@ -128,6 +135,22 @@ impl Iterator for AudioEngine {
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // {
+        //     // DEBUG
+        //     let new_sample_time = std::time::Instant::now();
+        //     let elapsed = new_sample_time
+        //         .duration_since(self.last_sample_time)
+        //         .as_secs_f32();
+        //     self.last_sample_time = new_sample_time;
+        //     self.last_sample_durations[self.last_sample_index] = elapsed;
+        //     self.last_sample_index += 1;
+        //     self.last_sample_index %= 48000;
+        //     if self.last_sample_index == 47999 {
+        //         let average = self.last_sample_durations.iter().sum::<f32>() / 48000.0; // Why does code SIGILL when this is changed to into_iter
+        //         println!("Average sample rate: {}", average.recip());
+        //     }
+        // }
+
         if !self.is_playing {
             return Some(0.0);
         }

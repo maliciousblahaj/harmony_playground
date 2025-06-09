@@ -1,10 +1,11 @@
 use iced::{
-    widget::{Button, Text},
     Alignment,
+    widget::{Button, Text},
 };
 
 pub mod global_frequency;
 pub mod relative_frequency;
+pub mod save_dialog;
 pub mod theme;
 
 pub fn icon_button<Message>(icon: Text, size: impl Into<iced::Pixels>) -> Button<Message> {

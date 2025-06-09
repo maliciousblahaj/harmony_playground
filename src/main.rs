@@ -21,17 +21,18 @@ use harmony_playground::{
         relative_frequency::{
             Ratio, RelativeFrequency, RelativeFrequencyMessage, RelativeFrequencyStateUpdate,
         },
+        save_dialog::{SaveDialog, SaveDialogMessage, modal},
     },
     icon,
 };
 use iced::{
+    Element, Length, Task,
     alignment::Horizontal,
     widget::{
         button, column, combo_box, container, horizontal_space, radio, row,
         scrollable::{Direction, Scrollbar},
         text, vertical_slider, vertical_space,
     },
-    Element, Length, Task,
 };
 use rodio::{OutputStream, Source};
 
@@ -65,8 +66,9 @@ struct State {
     theme_selector_state: iced::widget::combo_box::State<iced::Theme>,
     is_loading: bool,
     /// If a file is open, this contains the path and a boolean indicating if the file is saved or not
-    file: Option<(PathBuf, bool)>,
+    file: (Option<PathBuf>, bool),
     current_error: Option<Error>,
+    show_save_confirmation: Option<Message>,
 }
 
 impl State {
@@ -87,8 +89,9 @@ impl State {
             theme: iced::Theme::Dark,
             theme_selector_state: iced::widget::combo_box::State::new(Vec::from(iced::Theme::ALL)),
             is_loading: false,
-            file: None,
+            file: (None, true),
             current_error: None,
+            show_save_confirmation: None,
         }
     }
 
@@ -117,9 +120,12 @@ impl State {
 
     /// Function that should be called after every change to display to the user that they need to save
     pub fn unsave(&mut self) {
-        if let Some((_, ref mut is_saved)) = self.file {
-            *is_saved = false;
-        }
+        self.file.1 = false;
+    }
+
+    /// Returns whether the current project is saved or not
+    pub fn is_saved(&self) -> bool {
+        self.file.1
     }
 
     /// Returns the oscillator id and shared frequency if it succeeds to initialize, else None
@@ -163,6 +169,7 @@ impl State {
             engine.clear_oscillators();
             engine.set_volume(save.volume);
             engine.set_waveform(save.waveform);
+            engine.stop();
         }
 
         let relative_frequencies = save
@@ -208,8 +215,9 @@ impl State {
             theme,
             theme_selector_state: iced::widget::combo_box::State::new(Vec::from(iced::Theme::ALL)),
             is_loading: false,
-            file: file_path.map(|path| (path, true)),
+            file: (file_path, true),
             current_error: None,
+            show_save_confirmation: None,
         }
     }
 
@@ -407,25 +415,27 @@ enum Message {
     OpenFile,
     SaveLoaded(Result<(PathBuf, Arc<StateSave>), Error>),
     StateSaved(Result<PathBuf, Error>),
+    SaveDialogUpdated(SaveDialogMessage),
 }
 impl State {
     fn title(&self) -> String {
-        let (path, has_saved) = self
-            .file
+        let (ref path, has_saved) = self.file;
+        let path = path
             .as_ref()
-            .map(|(path, saved)| {
-                (
-                    path.as_os_str()
-                        .to_str()
-                        .unwrap_or("Unable to display file path"),
-                    *saved,
-                )
+            .map(|path| {
+                path.as_os_str()
+                    .to_str()
+                    .unwrap_or("Unable to display file path")
             })
-            .unwrap_or(("New file", false));
+            .unwrap_or("New file");
         format!(
             "{}Harmony playground - {path}",
             if has_saved { "" } else { "*" }
         )
+    }
+
+    fn await_save(&mut self, message: Message) {
+        self.show_save_confirmation = Some(message);
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -446,7 +456,7 @@ impl State {
                 Task::none()
             }
             Message::AddGlobalFrequency => {
-                self.add_global_frequency(42.0);
+                self.add_global_frequency(220.0);
                 self.unsave();
                 Task::none()
             }
@@ -471,6 +481,10 @@ impl State {
             }
 
             Message::NewFile => {
+                if !self.is_saved() {
+                    self.await_save(Message::NewFile);
+                    return Task::none();
+                }
                 if !self.is_loading {
                     self.engine.lock().unwrap().reset();
                     *self = Self::new(self.engine.clone());
@@ -490,6 +504,10 @@ impl State {
                 }
             }
             Message::OpenFile => {
+                if !self.is_saved() {
+                    self.await_save(Message::OpenFile);
+                    return Task::none();
+                }
                 if self.is_loading {
                     Task::none()
                 } else {
@@ -522,13 +540,15 @@ impl State {
 
                 match result {
                     Ok(path) => {
-                        self.file = Some((path, true));
+                        self.file = (Some(path), true);
+                        if let Some(message) = self.show_save_confirmation.take() {
+                            return self.update(message);
+                        }
                     }
                     Err(error) => {
                         self.set_error(error);
                     }
                 }
-
                 Task::none()
             }
             Message::PlayPressed => {
@@ -537,6 +557,24 @@ impl State {
             }
             Message::StopPressed => {
                 self.engine.lock().unwrap().stop();
+                Task::none()
+            }
+            Message::SaveDialogUpdated(save_dialog_message) => {
+                match save_dialog_message {
+                    SaveDialogMessage::CancelPressed => {
+                        self.show_save_confirmation = None;
+                    }
+                    SaveDialogMessage::DontSavePressed => {
+                        self.file.1 = true;
+                        if let Some(message) = self.show_save_confirmation.take() {
+                            dbg!(&message);
+                            return self.update(message);
+                        }
+                    }
+                    SaveDialogMessage::SavePressed => {
+                        return self.update(Message::SaveFile);
+                    }
+                }
                 Task::none()
             }
         }
@@ -568,9 +606,9 @@ impl State {
             row(self
                 .relative_frequencies
                 .iter()
-                .map(|(id, (relative_frequency, _, _, _))| {
+                .map(|(id, (relative_frequency, _, shared_frequency, _))| {
                     relative_frequency
-                        .view(self.global_frequencies.len())
+                        .view(self.global_frequencies.len(), shared_frequency.get())
                         .map(move |message| match message {
                             RelativeFrequencyMessage::Deleted => {
                                 Message::RelativeFrequencyDeleted(*id)
@@ -650,7 +688,6 @@ impl State {
         };
 
         let top_bar = row![
-            // TODO: add a dialog asking if the user wants to save before creating a new one or opening
             button("New").on_press(Message::NewFile),
             button("Open").on_press(Message::OpenFile),
             button("Save").on_press(Message::SaveFile),
@@ -676,7 +713,7 @@ impl State {
             horizontal_space().width(Length::Fill),
         ];
 
-        container(
+        let window_content = container(
             column![
                 top_bar,
                 row![
@@ -748,7 +785,16 @@ impl State {
             .spacing(10),
         )
         .padding(10)
-        .into()
+        .into();
+
+        if self.show_save_confirmation.is_some() {
+            modal(
+                window_content,
+                SaveDialog::view().map(Message::SaveDialogUpdated),
+            )
+        } else {
+            window_content
+        }
     }
 }
 async fn open_file() -> Result<(PathBuf, Arc<StateSave>), Error> {

@@ -42,14 +42,7 @@ impl WaveTable {
     pub fn get_interpolated_value(&self, index: f32) -> f32 {
         let index = index % (WAVETABLE_SIZE as f32);
         let floor = index as usize;
-        let (sample0, sample1) = (
-            self.0[floor],
-            self.0[if floor == WAVETABLE_SIZE - 1 {
-                0
-            } else {
-                floor + 1
-            }],
-        );
+        let (sample0, sample1) = (self.0[floor], self.0[(floor + 1) % WAVETABLE_SIZE]);
         lerp(sample0, sample1, index - (floor as f32))
     }
 }

@@ -1,7 +1,7 @@
 [package]
 name = "harmony_playground"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 color-eyre = "0.6"
@@ -16,7 +16,7 @@ tokio = { version = "1.44", features = ["fs"] }
 [dependencies.iced_aw]
 path = "../iced_aw" # local version where i fixed the bug of subtracting unsigned integers in src/widget/number_input.rs:470
 default-features = false
-features = ["number_input", "menu"]
+features = ["number_input"]
 
 [build-dependencies]
 iced_fontello = "0.13"
